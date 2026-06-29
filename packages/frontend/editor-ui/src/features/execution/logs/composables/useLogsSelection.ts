@@ -4,6 +4,8 @@ import {
 	findSelectedLogEntry,
 	getDepth,
 	getEntryAtRelativeIndex,
+	isGroupLog,
+	isNodeLog,
 	isSubNodeLog,
 } from '@/features/execution/logs/logs.utils';
 import { useTelemetry } from '@/app/composables/useTelemetry';
@@ -40,6 +42,14 @@ export function useLogsSelection(
 			return;
 		}
 
+		// Provisional: selecting a group highlights its member nodes on canvas. The canvas
+		// maps a selected member back to its group, so this works whether the group is
+		// collapsed or expanded. We deliberately don't change canvas collapse state here.
+		if (isGroupLog(value)) {
+			canvasEventBus.emit('nodes:select', { ids: value.group.nodeIds, panIntoView: true });
+			return;
+		}
+
 		canvasEventBus.emit('nodes:select', { ids: [value.node.id], panIntoView: true });
 	}
 
@@ -50,13 +60,15 @@ export function useLogsSelection(
 		if (value) {
 			syncSelectionToCanvasIfEnabled(value);
 
-			telemetry.track('User selected node in log view', {
-				node_type: value.node.type,
-				node_id: value.node.id,
-				execution_id: execution.value?.id,
-				workflow_id: execution.value?.workflowData.id,
-				subworkflow_depth: getDepth(value),
-			});
+			if (isNodeLog(value)) {
+				telemetry.track('User selected node in log view', {
+					node_type: value.node.type,
+					node_id: value.node.id,
+					execution_id: execution.value?.id,
+					workflow_id: execution.value?.workflowData.id,
+					subworkflow_depth: getDepth(value),
+				});
+			}
 		}
 	}
 
@@ -107,9 +119,23 @@ export function useLogsSelection(
 			const selectedNodeId = selectedOnCanvas
 				? workflowDocumentStore.value.nodesByName[selectedOnCanvas]?.id
 				: undefined;
+			const selectedEntry = selected.value;
+			const selectedEntryNodeId =
+				selectedEntry && isNodeLog(selectedEntry) ? selectedEntry.node.id : undefined;
+
+			// Keep a selected group row selected even when canvas highlights one of its members
+			// (which happens as a result of our own logs->canvas sync)
+			const isMemberOfSelectedGroup =
+				selectedEntry !== undefined &&
+				isGroupLog(selectedEntry) &&
+				selectedNodeId !== undefined &&
+				selectedEntry.group.nodeIds.includes(selectedNodeId);
 
 			nodeIdToSelect.value =
-				shouldSync && !canvasStore.hasRangeSelection && selected.value?.node.id !== selectedNodeId
+				shouldSync &&
+				!canvasStore.hasRangeSelection &&
+				!isMemberOfSelectedGroup &&
+				selectedEntryNodeId !== selectedNodeId
 					? selectedNodeId
 					: undefined;
 		},
@@ -123,7 +149,7 @@ export function useLogsSelection(
 				return;
 			}
 
-			const entry = findLogEntryRec((e) => e.node.id === id, latestTree);
+			const entry = findLogEntryRec((e) => isNodeLog(e) && e.node.id === id, latestTree);
 
 			if (!entry) {
 				return;
@@ -140,6 +166,49 @@ export function useLogsSelection(
 			}
 		},
 		{ immediate: true },
+	);
+
+	// Selecting a collapsed group on canvas selects that group's row in logs
+	watch(
+		[tree, () => canvasStore.selectedGroupId, () => logsStore.isLogSelectionSyncedWithCanvas],
+		([latestTree, groupId, shouldSync]) => {
+			if (!shouldSync || !groupId) {
+				return;
+			}
+
+			if (selected.value && isGroupLog(selected.value) && selected.value.group.id === groupId) {
+				return;
+			}
+
+			const entry = findLogEntryRec((e) => isGroupLog(e) && e.group.id === groupId, latestTree);
+
+			if (entry) {
+				manualLogEntrySelection.value = { type: 'selected', entry };
+			}
+		},
+		{ immediate: true },
+	);
+
+	const erroredEntry = computed(() =>
+		isExecutionStopped.value
+			? findLogEntryRec((e) => isNodeLog(e) && !!e.runData?.error, tree.value)
+			: undefined,
+	);
+
+	// A failed run surfaces the error over remembered view state, once per run
+	watch(
+		() => (erroredEntry.value ? execution.value?.id : undefined),
+		(executionId) => {
+			if (!executionId || !erroredEntry.value) {
+				return;
+			}
+
+			manualLogEntrySelection.value = { type: 'initial' }; // auto-selects the errored node
+
+			for (let parent = erroredEntry.value.parent; parent !== undefined; parent = parent.parent) {
+				toggleExpand(parent, true);
+			}
+		},
 	);
 
 	return { selected, select, selectPrev, selectNext };

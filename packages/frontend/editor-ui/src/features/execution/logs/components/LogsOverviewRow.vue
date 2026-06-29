@@ -11,6 +11,8 @@ import LogsViewNodeName from '@/features/execution/logs/components/LogsViewNodeN
 import {
 	getSubtreeTotalConsumedTokens,
 	hasSubExecution,
+	isGroupLog,
+	isNodeLog,
 } from '@/features/execution/logs/logs.utils';
 import { useTimestamp } from '@vueuse/core';
 import type { LatestNodeInfo, LogEntry } from '@/features/execution/logs/logs.types';
@@ -39,20 +41,34 @@ const container = useTemplateRef('containerRef');
 const locale = useI18n();
 const now = useTimestamp({ interval: 1000 });
 const nodeTypeStore = useNodeTypesStore();
-const type = computed(() => nodeTypeStore.getNodeType(props.data.node.type));
-const isRunning = computed(() => props.data.runData?.executionStatus === 'running');
-const isWaiting = computed(() => props.data.runData?.executionStatus === 'waiting');
+const nodeData = computed(() => (isNodeLog(props.data) ? props.data : undefined));
+const groupData = computed(() => (isGroupLog(props.data) ? props.data : undefined));
+const runData = computed(() => nodeData.value?.runData);
+const type = computed(() =>
+	nodeData.value ? nodeTypeStore.getNodeType(nodeData.value.node.type) : null,
+);
+const displayName = computed(() =>
+	groupData.value
+		? groupData.value.group.name
+		: (props.latestInfo?.name ?? nodeData.value?.node.name ?? ''),
+);
+const isRunning = computed(() => runData.value?.executionStatus === 'running');
+const isWaiting = computed(() => runData.value?.executionStatus === 'waiting');
 const isSettled = computed(() => !isRunning.value && !isWaiting.value);
-const isError = computed(() => !!props.data.runData?.error);
+const isError = computed(() =>
+	groupData.value ? groupData.value.hasError : !!runData.value?.error,
+);
 const statusTextKeyPath = computed<BaseTextKey>(() =>
 	isSettled.value ? 'logs.overview.body.summaryText.in' : 'logs.overview.body.summaryText.for',
 );
 const startedAtText = computed(() => {
-	if (props.data.runData === undefined) {
+	const startTime = runData.value?.startTime;
+
+	if (startTime === undefined) {
 		return '—';
 	}
 
-	const time = new Date(props.data.runData.startTime);
+	const time = new Date(startTime);
 
 	return locale.baseText('logs.overview.body.started', {
 		interpolate: {
@@ -60,13 +76,13 @@ const startedAtText = computed(() => {
 		},
 	});
 });
-const statusText = computed(() => upperFirst(props.data.runData?.executionStatus ?? ''));
+const statusText = computed(() => upperFirst(runData.value?.executionStatus ?? ''));
 const timeText = computed(() =>
-	props.data.runData
+	runData.value
 		? locale.displayTimer(
 				isSettled.value
-					? props.data.runData.executionTime
-					: Math.floor((now.value - props.data.runData.startTime) / 1000) * 1000,
+					? runData.value.executionTime
+					: Math.floor((now.value - runData.value.startTime) / 1000) * 1000,
 				true,
 			)
 		: undefined,
@@ -141,14 +157,20 @@ watch(
 			}"
 		/>
 		<div :class="$style.background" :style="{ '--indent-depth': indents.length }" />
-		<NodeIcon :node-type="type" :size="16" :class="$style.icon" />
+		<NodeIcon v-if="!groupData" :node-type="type" :size="16" :class="$style.icon" />
 		<LogsViewNodeName
-			:class="$style.name"
-			:name="latestInfo?.name ?? props.data.node.name"
+			:class="[$style.name, groupData ? $style.groupName : '']"
+			:name="displayName"
 			:is-error="isError"
 			:is-deleted="latestInfo?.deleted ?? false"
 		/>
-		<N8nText v-if="!isCompact" tag="div" color="text-light" size="small" :class="$style.timeTook">
+		<N8nText
+			v-if="!isCompact && !groupData"
+			tag="div"
+			color="text-light"
+			size="small"
+			:class="$style.timeTook"
+		>
 			<I18nT v-if="timeText !== undefined" :keypath="statusTextKeyPath" scope="global">
 				<template #status>
 					<N8nText :color="isError ? 'danger' : undefined" :bold="isError" size="small">
@@ -163,7 +185,7 @@ watch(
 			<template v-else>—</template>
 		</N8nText>
 		<N8nText
-			v-if="!isCompact"
+			v-if="!isCompact && !groupData"
 			tag="div"
 			color="text-light"
 			size="small"
@@ -193,8 +215,8 @@ watch(
 			:class="$style.compactErrorIcon"
 		/>
 		<N8nIconButton
+			v-if="!groupData && canOpenNdv && (!isCompact || !props.latestInfo?.deleted)"
 			variant="ghost"
-			v-if="canOpenNdv && (!isCompact || !props.latestInfo?.deleted)"
 			size="small"
 			icon="square-pen"
 			icon-size="medium"
@@ -207,11 +229,12 @@ watch(
 			@click.stop="emit('openNdv')"
 		/>
 		<N8nIconButton
-			variant="ghost"
 			v-if="
-				!isCompact ||
-				(!props.isReadOnly && !props.latestInfo?.deleted && !props.latestInfo?.disabled)
+				!groupData &&
+				(!isCompact ||
+					(!props.isReadOnly && !props.latestInfo?.deleted && !props.latestInfo?.disabled))
 			"
+			variant="ghost"
 			size="small"
 			icon="play"
 			:aria-label="locale.baseText('logs.overview.body.run')"
@@ -314,8 +337,6 @@ watch(
 }
 
 .icon {
-	/* stylelint-disable-next-line @n8n/css-var-naming */
-	margin-left: var(--row-gap-thickness);
 	flex-grow: 0;
 	flex-shrink: 0;
 }
@@ -324,6 +345,11 @@ watch(
 	flex-basis: 0;
 	flex-grow: 1;
 	padding-inline-start: 0;
+}
+
+/* Groups have no icon, so inset the label to match where node labels start */
+.groupName {
+	padding-inline-start: var(--spacing--2xs);
 }
 
 .timeTook {
