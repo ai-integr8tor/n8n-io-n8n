@@ -730,6 +730,22 @@ describe('WorkflowDetails', () => {
 		});
 	});
 
+	describe('Collaboration lifecycle', () => {
+		it('opens the collaboration session on mount and only closes it on unmount', async () => {
+			collaborationStore.initialize.mockClear();
+			collaborationStore.terminate.mockClear();
+
+			const { unmount } = renderComponent({ props: { ...defaultProps } });
+
+			expect(collaborationStore.initialize).toHaveBeenCalledWith('1');
+			expect(collaborationStore.terminate).not.toHaveBeenCalled();
+
+			unmount();
+
+			expect(collaborationStore.terminate).toHaveBeenCalledTimes(1);
+		});
+	});
+
 	describe('Archived badge', () => {
 		it('should show badge on archived workflow', async () => {
 			workflowDocumentStoreRef.value?.setScopes(['workflow:delete']);

@@ -9,6 +9,7 @@ import { MAX_WORKFLOW_NAME_LENGTH, MODAL_CONFIRM, VIEWS } from '@/app/constants'
 
 import { useProjectsStore } from '@/features/collaboration/projects/projects.store';
 import { useCollaborationStore } from '@/features/collaboration/collaboration/collaboration.store';
+import { useCollaborationLifecycle } from '@/features/collaboration/collaboration/composables/useCollaborationLifecycle';
 import { useSourceControlStore } from '@/features/integrations/sourceControl.ee/sourceControl.store';
 import { useDocumentTitle } from '@/app/composables/useDocumentTitle';
 import { useInjectWorkflowId } from '@/app/composables/useInjectWorkflowId';
@@ -82,6 +83,8 @@ const toast = useToast();
 const documentTitle = useDocumentTitle();
 const workflowId = useInjectWorkflowId();
 const workflowDocumentStore = inject(WorkflowDocumentStoreKey, null);
+
+useCollaborationLifecycle(workflowId);
 
 const isTagsEditEnabled = ref(false);
 const appliedTagIds = ref<string[]>([]);
