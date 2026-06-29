@@ -537,6 +537,7 @@ async function runWithLangSmith(config: RunConfig): Promise<{
 				threadId: build.threadId,
 				workflowChecks: build.workflowChecks,
 				buildTrace: build.buildTrace,
+				planRejections: build.proxyDecisionStats?.rejection ?? 0,
 			};
 		}
 
@@ -593,6 +594,7 @@ async function runWithLangSmith(config: RunConfig): Promise<{
 					workflowChecks: build.workflowChecks,
 					workflowJson: build.workflowJsons[0],
 					buildTrace: build.buildTrace,
+					planRejections: build.proxyDecisionStats?.rejection ?? 0,
 				};
 			}
 		}
@@ -620,6 +622,7 @@ async function runWithLangSmith(config: RunConfig): Promise<{
 			workflowChecks: build.workflowChecks,
 			workflowJson: build.workflowJsons[0],
 			buildTrace: build.buildTrace,
+			planRejections: build.proxyDecisionStats?.rejection ?? 0,
 		};
 	};
 
@@ -650,6 +653,11 @@ async function runWithLangSmith(config: RunConfig): Promise<{
 		];
 		if (output.buildDurationMs !== undefined) {
 			feedback.push({ key: 'build_duration_s', score: output.buildDurationMs / 1000 });
+		}
+		// Deterministic conversation counter (per evals rubric) — a navigation/feature
+		// signal for the HOW judges, not a gating check.
+		if (output.planRejections !== undefined) {
+			feedback.push({ key: 'plan_rejection_count', score: output.planRejections });
 		}
 		// Skip N/A so LangSmith column averages reduce to per-check pass-rate.
 		if (output.workflowChecks) {
