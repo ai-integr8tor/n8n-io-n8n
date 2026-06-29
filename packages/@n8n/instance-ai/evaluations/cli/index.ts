@@ -248,7 +248,14 @@ async function main(): Promise<void> {
 		const debugHtmlPath = writeRunDebugReport(reportResults);
 		console.log(`LLM debug:  ${debugHtmlPath}`);
 		console.log(
-			'\n' + formatComparisonTerminal(evaluation, outcome, { commitSha, slugByTestCase, gate }),
+			'\n' +
+				formatComparisonTerminal(evaluation, outcome, {
+					commitSha,
+					slugByTestCase,
+					gate,
+					// TODO: Remove when agent building is supported
+					caseSet: args.caseSet,
+				}),
 		);
 	} finally {
 		if (prebuiltWorkflowIdsToDelete && lanes[0]) {
@@ -709,6 +716,8 @@ async function runWithLangSmith(config: RunConfig): Promise<{
 			maxConcurrency: args.concurrency,
 			client: lsClient,
 			metadata: {
+				// TODO: Remove when agent building is supported
+				caseSet: args.caseSet,
 				filter: args.filter ?? 'all',
 				exclude: args.exclude ?? null,
 				tier: args.tier ?? null,
@@ -743,7 +752,10 @@ async function runWithLangSmith(config: RunConfig): Promise<{
 			lanes[0]?.baseUrl,
 			runDebugResolved,
 		);
-		const evaluation = aggregateResults(allRunResults, args.iterations);
+		const evaluation = aggregateResults(allRunResults, args.iterations, {
+			// TODO: Remove when agent building is supported
+			caseSet: args.caseSet,
+		});
 
 		await updateExperimentAggregates({
 			lsClient,
@@ -1016,7 +1028,13 @@ async function runDirectLoop(config: RunConfig): Promise<{
 		}),
 	);
 
-	return { evaluation: aggregateResults(allRunResults, args.iterations), slugByTestCase };
+	return {
+		evaluation: aggregateResults(allRunResults, args.iterations, {
+			// TODO: Remove when agent building is supported
+			caseSet: args.caseSet,
+		}),
+		slugByTestCase,
+	};
 }
 
 // ---------------------------------------------------------------------------
