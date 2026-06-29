@@ -1,5 +1,10 @@
 import { Logger } from '@n8n/backend-common';
-import { WorkflowPublicationOutbox, WorkflowPublicationOutboxRepository } from '@n8n/db';
+import {
+	WorkflowPublicationOutbox,
+	WorkflowPublicationOutboxRepository,
+	WorkflowPublicationTriggerStatusRepository,
+	type TriggerStatusRow,
+} from '@n8n/db';
 import { Service } from '@n8n/di';
 import { ErrorReporter } from 'n8n-core';
 
@@ -8,14 +13,14 @@ import { Push } from '@/push';
 import type {
 	PublicationResult,
 	PublicationSkipReason,
+	TriggerPublicationStatus,
 } from '@/workflows/publication/publication-result';
-import type { TriggerActivationFailure } from '@/workflows/triggers/workflow-trigger-activator';
 
 /**
  * Turns a {@link PublicationResult} into terminal state. This is the only place
  * that writes terminal outbox statuses and the only place that maps a result to
- * its side effects: clearing or (in a later phase) recording activation errors,
- * and pushing publication status to the UI.
+ * its side effects: persisting per-trigger status rows, clearing legacy activation
+ * errors on success, and pushing publication status to the UI.
  */
 @Service()
 export class PublicationStatusReporter {
@@ -25,6 +30,7 @@ export class PublicationStatusReporter {
 		private readonly outboxRepository: WorkflowPublicationOutboxRepository,
 		private readonly activationErrorsService: ActivationErrorsService,
 		private readonly push: Push,
+		private readonly triggerStatusRepository: WorkflowPublicationTriggerStatusRepository,
 	) {
 		this.logger = this.logger.scoped('workflow-publication');
 	}
@@ -32,6 +38,10 @@ export class PublicationStatusReporter {
 	async report(record: WorkflowPublicationOutbox, result: PublicationResult): Promise<void> {
 		switch (result.type) {
 			case 'completed': {
+				await this.triggerStatusRepository.replaceForWorkflow(
+					record.workflowId,
+					this.toRows(record, result.triggerStatuses),
+				);
 				await this.complete(record);
 				this.push.broadcast({
 					type: 'workflowActivated',
@@ -41,6 +51,7 @@ export class PublicationStatusReporter {
 			}
 
 			case 'unpublished': {
+				await this.triggerStatusRepository.deleteForWorkflow(record.workflowId);
 				await this.complete(record);
 				this.push.broadcast({
 					type: 'workflowDeactivated',
@@ -68,6 +79,12 @@ export class PublicationStatusReporter {
 			}
 
 			case 'failed': {
+				if (result.triggerStatuses) {
+					await this.triggerStatusRepository.replaceForWorkflow(
+						record.workflowId,
+						this.toRows(record, result.triggerStatuses),
+					);
+				}
 				this.errorReporter.error(result.error, { shouldBeLogged: true });
 				await this.outboxRepository.markFailed(record.id, result.error.message);
 				this.pushFailedToActivate(record.workflowId, result.error.message);
@@ -75,7 +92,7 @@ export class PublicationStatusReporter {
 			}
 
 			case 'partial': {
-				await this.reportPartial(record, result.failures);
+				await this.reportPartial(record, result.triggerStatuses);
 				return;
 			}
 		}
@@ -83,27 +100,31 @@ export class PublicationStatusReporter {
 
 	/**
 	 * Reports a partial publication: the new version stays published with the
-	 * surviving triggers running. Records a `partial_success` status, registers a
-	 * structured per-node activation error so it surfaces on reload, and pushes the
-	 * failure detail to connected clients. The workflow is not unpublished.
+	 * surviving triggers running. Marks the outbox record `partial_success`,
+	 * full-replaces the workflow's per-trigger status rows, and pushes the
+	 * per-node failure detail to connected clients. The workflow is not unpublished.
 	 *
 	 * The push is leader-local for now; multi-main pubsub routing is tracked as
 	 * follow-up work (see CAT-3423).
 	 */
 	private async reportPartial(
 		record: WorkflowPublicationOutbox,
-		failures: TriggerActivationFailure[],
+		triggerStatuses: TriggerPublicationStatus[],
 	): Promise<void> {
+		const failures = triggerStatuses.filter((s) => s.status === 'failed');
 		const errorMessage = this.formatActivationError(failures);
 
 		this.logger.warn('Workflow partially published; some triggers failed to activate', {
 			workflowId: record.workflowId,
 			outboxId: record.id,
-			failedNodeIds: failures.map((failure) => failure.nodeId),
+			failedNodeIds: failures.map((s) => s.nodeId),
 		});
 
+		await this.triggerStatusRepository.replaceForWorkflow(
+			record.workflowId,
+			this.toRows(record, triggerStatuses),
+		);
 		await this.outboxRepository.markPartialSuccess(record.id, errorMessage);
-		await this.activationErrorsService.register(record.workflowId, errorMessage);
 
 		this.push.broadcast({
 			type: 'workflowPartiallyActivated',
@@ -111,20 +132,31 @@ export class PublicationStatusReporter {
 				workflowId: record.workflowId,
 				activeVersionId: record.publishedVersionId,
 				errorMessage,
-				failedNodes: failures.map((failure) => ({
-					nodeId: failure.nodeId,
-					nodeName: failure.nodeName,
-					errorMessage: failure.error.message,
+				failedNodes: failures.map((s) => ({
+					nodeId: s.nodeId,
+					nodeName: s.nodeName,
+					errorMessage: s.errorMessage ?? '',
 				})),
 			},
 		});
 	}
 
+	/** Maps trigger publication statuses to repository row objects, stamping the published version. */
+	private toRows(
+		record: WorkflowPublicationOutbox,
+		statuses: TriggerPublicationStatus[],
+	): TriggerStatusRow[] {
+		return statuses.map((s) => ({
+			nodeId: s.nodeId,
+			versionId: record.publishedVersionId,
+			status: s.status,
+			errorMessage: s.errorMessage,
+		}));
+	}
+
 	/** Builds a human-readable message naming each failed node and its error. */
-	private formatActivationError(failures: TriggerActivationFailure[]): string {
-		const detail = failures
-			.map((failure) => `"${failure.nodeName}": ${failure.error.message}`)
-			.join('; ');
+	private formatActivationError(failures: TriggerPublicationStatus[]): string {
+		const detail = failures.map((s) => `"${s.nodeName}": ${s.errorMessage ?? ''}`).join('; ');
 
 		return `Some triggers failed to activate: ${detail}`;
 	}
