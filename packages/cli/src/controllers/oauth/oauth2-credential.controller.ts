@@ -166,7 +166,9 @@ export class OAuth2CredentialController {
 	private convertCredentialToOptions(credential: OAuth2CredentialData): ClientOAuth2Options {
 		const options: ClientOAuth2Options = {
 			clientId: credential.clientId,
-			clientSecret: credential.clientSecret ?? '',
+			clientCredentialType: credential.clientCredentialType,
+			clientSecret:
+				credential.clientCredentialType === 'certificate' ? '' : (credential.clientSecret ?? ''),
 			accessTokenUri: credential.accessTokenUrl ?? '',
 			authorizationUri: credential.authUrl ?? '',
 			authentication: credential.authentication ?? 'header',
@@ -176,6 +178,17 @@ export class OAuth2CredentialController {
 			resource: credential.resource,
 			ignoreSSLIssues: credential.ignoreSSLIssues ?? false,
 		};
+
+		if (
+			credential.clientCredentialType === 'certificate' &&
+			credential.privateKey &&
+			credential.certificate
+		) {
+			options.clientCertificate = {
+				privateKey: credential.privateKey,
+				certificate: credential.certificate,
+			};
+		}
 
 		if (
 			credential.additionalBodyProperties &&
