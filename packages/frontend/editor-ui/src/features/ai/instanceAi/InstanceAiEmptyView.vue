@@ -59,6 +59,11 @@ import WorkflowBuilderUnavailableNotice from './components/WorkflowBuilderUnavai
 import CreditWarningBanner from '@/features/ai/assistant/components/Agent/CreditWarningBanner.vue';
 import ProjectSelect from './components/ProjectSelect.vue';
 import { useProjectsStore } from '@/features/collaboration/projects/projects.store';
+import {
+	useInstanceAiTemplateExamplesExperiment,
+	TemplateExamplesCatalog,
+	TEMPLATE_PROMPT_SUFFIX,
+} from '@/experiments/instanceAiTemplateExamples';
 
 const INSTANCE_AI_DEFAULT_TITLE_KEY: BaseTextKey = 'instanceAi.emptyState.title';
 // Experiment cleanup: remove with instanceAiPromptSuggestionsV2.
@@ -97,6 +102,8 @@ const { isFeatureEnabled: isPromptSuggestionsV2ExperimentEnabled } =
 	useInstanceAiPromptSuggestionsV2Experiment();
 const { isFeatureEnabled: isWorkflowPreviewSuggestionsExperimentEnabled } =
 	useInstanceAiWorkflowPreviewSuggestionsExperiment();
+const { isFeatureEnabled: isTemplateExamplesExperimentEnabled } =
+	useInstanceAiTemplateExamplesExperiment();
 const { isVariantEnabled: isSplitVariantEnabled } = useInstanceAiSplitEmptyStateExperiment();
 // Experiment cleanup: remove with instanceAiSplitEmptyState.
 const splitPreviewPromptKey = ref<BaseTextKey | null>(null);
@@ -217,6 +224,9 @@ const emptyStatePromptSuggestionProps = computed(() => {
 		return {};
 	}
 
+	if (isTemplateExamplesExperimentEnabled.value) {
+		return {};
+	}
 	if (isPersonalizedPromptSuggestionsTreatmentVariant.value) {
 		const resolution = personalizedPromptSuggestionResolution.value;
 
@@ -267,7 +277,16 @@ const emptyStatePromptSuggestionProps = computed(() => {
 		suggestions: INSTANCE_AI_EMPTY_STATE_SUGGESTIONS,
 	};
 });
+// Experiment cleanup: remove with InstanceAiTemplateExamplesExperiment
+const INSTANCE_AI_TEMPLATE_EXAMPLES_TITLE_KEY =
+	'experiments.instanceAiTemplateExamples.emptyState.title' as BaseTextKey;
+const INSTANCE_AI_TEMPLATE_EXAMPLES_PLACEHOLDER_KEY =
+	'experiments.instanceAiTemplateExamples.input.placeholder' as BaseTextKey;
+
 const emptyStateTitleKey = computed<BaseTextKey>(() => {
+	if (isTemplateExamplesExperimentEnabled.value) {
+		return INSTANCE_AI_TEMPLATE_EXAMPLES_TITLE_KEY;
+	}
 	if (isPersonalizedPromptSuggestionsTreatmentVariant.value) {
 		return INSTANCE_AI_PROMPT_SUGGESTIONS_V2_TITLE_KEY;
 	}
@@ -282,6 +301,34 @@ const emptyStateTitleKey = computed<BaseTextKey>(() => {
 
 const chatInputRef = ref<InstanceType<typeof InstanceAiInput> | null>(null);
 const isStartingThread = ref(false);
+
+// Experiment cleanup: remove with InstanceAiTemplateExamplesExperiment
+const templatePreviewPrompt = ref<string | null>(null);
+
+function handleTemplateHoverPrompt(prompt: string) {
+	templatePreviewPrompt.value = prompt;
+}
+
+function handleTemplateHoverEnd() {
+	templatePreviewPrompt.value = null;
+}
+
+const inputPulsing = ref(false);
+const promptFromTemplate = ref(false);
+
+function handleTemplateSelectPrompt(prompt: string) {
+	templatePreviewPrompt.value = null;
+	if (chatInputRef.value) {
+		chatInputRef.value.setText(prompt);
+		chatInputRef.value.focus();
+	}
+	promptFromTemplate.value = true;
+	inputPulsing.value = true;
+	setTimeout(() => {
+		inputPulsing.value = false;
+	}, 250);
+}
+// EOF InstanceAiTemplateExamplesExperiment experiment cleanup
 const emptyLayoutRef = useTemplateRef<HTMLElement>('emptyLayout');
 const centeredInputRef = useTemplateRef<HTMLElement>('centeredInput');
 const CANVAS_NATURAL_HEIGHT_PX = 420;
@@ -297,7 +344,7 @@ useResizeObserver(emptyLayoutRef, () => {
 	const bottomPadding = parseFloat(layoutStyles.paddingBottom);
 	const gap = parseFloat(layoutStyles.gap) || 0;
 	const remainingSpace = containerRect.bottom - inputRect.bottom - bottomPadding - gap;
-	previewScale.value = Math.min(1, Math.max(0, remainingSpace / CANVAS_NATURAL_HEIGHT_PX));
+	previewScale.value = Math.max(0, Math.min(1, remainingSpace / CANVAS_NATURAL_HEIGHT_PX));
 });
 
 const hasSpaceForPreview = computed(() => previewScale.value >= PREVIEW_MIN_SCALE);
@@ -329,6 +376,12 @@ async function handleSubmit(message: string, attachments?: InstanceAiAttachment[
 		return;
 	}
 
+	const finalMessage =
+		promptFromTemplate.value && isTemplateExamplesExperimentEnabled.value
+			? message + TEMPLATE_PROMPT_SUFFIX
+			: message;
+	promptFromTemplate.value = false;
+
 	const threadId = uuidv4();
 	isStartingThread.value = true;
 
@@ -344,7 +397,7 @@ async function handleSubmit(message: string, attachments?: InstanceAiAttachment[
 	}
 
 	const thread = store.getOrCreateRuntime(threadId, selectedProject.value);
-	void thread.sendMessage(message, attachments, rootStore.pushRef);
+	void thread.sendMessage(finalMessage, attachments, rootStore.pushRef);
 	void router.replace({
 		name: INSTANCE_AI_THREAD_VIEW,
 		params: { threadId },
@@ -448,8 +501,11 @@ function handleShelfSuggestionInsert(payload: {
 				</template>
 			</InstanceAiSplitEmptyState>
 			<div v-else ref="emptyLayout" :class="$style.emptyLayout">
-				<InstanceAiEmptyState :title-key="emptyStateTitleKey" />
-				<div ref="centeredInput" :class="$style.centeredInput">
+				<InstanceAiEmptyState
+					:title-key="emptyStateTitleKey"
+					:show-title-icon="isTemplateExamplesExperimentEnabled"
+				/>
+				<div ref="centeredInput" :class="[$style.centeredInput, inputPulsing && $style.inputPulse]">
 					<CreditWarningBanner
 						v-if="creditBanner.visible.value"
 						:credits-remaining="store.creditsRemaining"
@@ -462,6 +518,13 @@ function handleShelfSuggestionInsert(payload: {
 						ref="chatInputRef"
 						:is-submitting="isStartingThread"
 						:is-workflow-builder-available="settingsStore.isWorkflowBuilderAvailable"
+						:contextual-suggestion="templatePreviewPrompt"
+						:placeholder-key="
+							isTemplateExamplesExperimentEnabled
+								? INSTANCE_AI_TEMPLATE_EXAMPLES_PLACEHOLDER_KEY
+								: undefined
+						"
+						:bold-placeholder="isTemplateExamplesExperimentEnabled"
 						v-bind="emptyStatePromptSuggestionProps"
 						@submit="handleSubmit"
 						@workflow-preview="handleWorkflowPreview"
@@ -473,6 +536,14 @@ function handleShelfSuggestionInsert(payload: {
 						</template>
 					</InstanceAiInput>
 				</div>
+				<!-- Experiment cleanup: remove with InstanceAiTemplateExamplesExperiment -->
+				<TemplateExamplesCatalog
+					v-if="isTemplateExamplesExperimentEnabled"
+					:class="$style.templateCatalog"
+					@hover-prompt="handleTemplateHoverPrompt"
+					@hover-end="handleTemplateHoverEnd"
+					@select-prompt="handleTemplateSelectPrompt"
+				/>
 				<Transition name="workflow-preview-fade">
 					<div
 						v-if="
@@ -542,6 +613,27 @@ function handleShelfSuggestionInsert(payload: {
 	display: flex;
 	flex-direction: column;
 	gap: var(--spacing--xs);
+}
+
+.inputPulse {
+	animation: inputScaleUp 0.25s ease;
+}
+
+@keyframes inputScaleUp {
+	0% {
+		transform: scale(1);
+	}
+	50% {
+		transform: scale(1.02);
+	}
+	100% {
+		transform: scale(1);
+	}
+}
+
+.templateCatalog {
+	width: 100%;
+	margin-top: var(--spacing--m);
 }
 
 .workflowPreviewWrapper {
